@@ -277,10 +277,14 @@ pub struct Stats {
     quota_refund_bytes_total: AtomicU64,
     quota_contention_total: AtomicU64,
     quota_contention_timeout_total: AtomicU64,
+    quota_acquire_cancelled_total: AtomicU64,
     quota_write_fail_bytes_total: AtomicU64,
     quota_write_fail_events_total: AtomicU64,
     me_child_join_timeout_total: AtomicU64,
     me_child_abort_total: AtomicU64,
+    flow_wait_middle_rate_limit_total: AtomicU64,
+    flow_wait_middle_rate_limit_cancelled_total: AtomicU64,
+    flow_wait_middle_rate_limit_ms_total: AtomicU64,
     telemetry_core_enabled: AtomicBool,
     telemetry_user_enabled: AtomicBool,
     telemetry_me_level: AtomicU8,
@@ -1459,6 +1463,12 @@ impl Stats {
                 .fetch_add(1, Ordering::Relaxed);
         }
     }
+    pub fn increment_quota_acquire_cancelled_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.quota_acquire_cancelled_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
     pub fn add_quota_write_fail_bytes_total(&self, bytes: u64) {
         if self.telemetry_core_enabled() {
             self.quota_write_fail_bytes_total
@@ -1480,6 +1490,20 @@ impl Stats {
     pub fn increment_me_child_abort_total(&self) {
         if self.telemetry_core_enabled() {
             self.me_child_abort_total.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn observe_flow_wait_middle_rate_limit_ms(&self, wait_ms: u64) {
+        if self.telemetry_core_enabled() {
+            self.flow_wait_middle_rate_limit_total
+                .fetch_add(1, Ordering::Relaxed);
+            self.flow_wait_middle_rate_limit_ms_total
+                .fetch_add(wait_ms, Ordering::Relaxed);
+        }
+    }
+    pub fn increment_flow_wait_middle_rate_limit_cancelled_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.flow_wait_middle_rate_limit_cancelled_total
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
     pub fn increment_me_endpoint_quarantine_total(&self) {
@@ -2326,6 +2350,9 @@ impl Stats {
         self.quota_contention_timeout_total
             .load(Ordering::Relaxed)
     }
+    pub fn get_quota_acquire_cancelled_total(&self) -> u64 {
+        self.quota_acquire_cancelled_total.load(Ordering::Relaxed)
+    }
     pub fn get_quota_write_fail_bytes_total(&self) -> u64 {
         self.quota_write_fail_bytes_total.load(Ordering::Relaxed)
     }
@@ -2337,6 +2364,18 @@ impl Stats {
     }
     pub fn get_me_child_abort_total(&self) -> u64 {
         self.me_child_abort_total.load(Ordering::Relaxed)
+    }
+    pub fn get_flow_wait_middle_rate_limit_total(&self) -> u64 {
+        self.flow_wait_middle_rate_limit_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_flow_wait_middle_rate_limit_cancelled_total(&self) -> u64 {
+        self.flow_wait_middle_rate_limit_cancelled_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_flow_wait_middle_rate_limit_ms_total(&self) -> u64 {
+        self.flow_wait_middle_rate_limit_ms_total
+            .load(Ordering::Relaxed)
     }
 
     pub fn increment_user_connects(&self, user: &str) {

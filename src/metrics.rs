@@ -784,6 +784,20 @@ async fn render_metrics(
             0
         }
     );
+    let _ = writeln!(
+        out,
+        "# HELP telemt_quota_acquire_cancelled_total Quota acquisitions cancelled before reservation completed"
+    );
+    let _ = writeln!(out, "# TYPE telemt_quota_acquire_cancelled_total counter");
+    let _ = writeln!(
+        out,
+        "telemt_quota_acquire_cancelled_total {}",
+        if core_enabled {
+            stats.get_quota_acquire_cancelled_total()
+        } else {
+            0
+        }
+    );
 
     let _ = writeln!(
         out,
@@ -2051,6 +2065,43 @@ async fn render_metrics(
         "telemt_me_child_abort_total {}",
         if core_enabled {
             stats.get_me_child_abort_total()
+        } else {
+            0
+        }
+    );
+    let _ = writeln!(
+        out,
+        "# HELP telemt_flow_wait_events_total Flow wait events by reason, direction, and outcome"
+    );
+    let _ = writeln!(out, "# TYPE telemt_flow_wait_events_total counter");
+    let _ = writeln!(
+        out,
+        "telemt_flow_wait_events_total{{reason=\"middle_rate_limit\",direction=\"down\",outcome=\"waited\"}} {}",
+        if core_enabled {
+            stats.get_flow_wait_middle_rate_limit_total()
+        } else {
+            0
+        }
+    );
+    let _ = writeln!(
+        out,
+        "telemt_flow_wait_events_total{{reason=\"middle_rate_limit\",direction=\"down\",outcome=\"cancelled\"}} {}",
+        if core_enabled {
+            stats.get_flow_wait_middle_rate_limit_cancelled_total()
+        } else {
+            0
+        }
+    );
+    let _ = writeln!(
+        out,
+        "# HELP telemt_flow_wait_ms_total Flow wait time in milliseconds by reason and direction"
+    );
+    let _ = writeln!(out, "# TYPE telemt_flow_wait_ms_total counter");
+    let _ = writeln!(
+        out,
+        "telemt_flow_wait_ms_total{{reason=\"middle_rate_limit\",direction=\"down\"}} {}",
+        if core_enabled {
+            stats.get_flow_wait_middle_rate_limit_ms_total()
         } else {
             0
         }
