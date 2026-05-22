@@ -52,6 +52,8 @@ async fn writer_command_loop(
 ) -> Result<()> {
     loop {
         tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
             cmd = rx.recv() => {
                 match cmd {
                     Some(WriterCommand::Data(payload)) => {
@@ -69,7 +71,6 @@ async fn writer_command_loop(
                     Some(WriterCommand::Close) | None => return Ok(()),
                 }
             }
-            _ = cancel.cancelled() => return Ok(()),
         }
     }
 }
@@ -108,6 +109,7 @@ async fn ping_loop(
         Duration::from_secs(wait)
     };
     tokio::select! {
+        biased;
         _ = cancel_ping_token.cancelled() => return,
         _ = tokio::time::sleep(startup_jitter) => {}
     }
@@ -131,6 +133,7 @@ async fn ping_loop(
             Duration::from_secs(secs)
         };
         tokio::select! {
+            biased;
             _ = cancel_ping_token.cancelled() => return,
             _ = tokio::time::sleep(wait) => {}
         }
@@ -191,6 +194,7 @@ async fn rpc_proxy_req_signal_loop(
     };
 
     tokio::select! {
+        biased;
         _ = cancel_signal.cancelled() => return,
         _ = tokio::time::sleep(Duration::from_millis(startup_jitter_ms)) => {}
     }
@@ -207,6 +211,7 @@ async fn rpc_proxy_req_signal_loop(
         };
 
         tokio::select! {
+            biased;
             _ = cancel_signal.cancelled() => return,
             _ = tokio::time::sleep(wait) => {}
         }

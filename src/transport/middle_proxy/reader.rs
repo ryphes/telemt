@@ -269,12 +269,13 @@ pub(crate) async fn reader_loop(
             fairness_retry_delay(reader_route_data_wait_ms.load(Ordering::Relaxed));
         let mut retry_only = false;
         let n = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
             res = rd.read(&mut tmp) => res.map_err(ProxyError::Io)?,
             _ = tokio::time::sleep(backlog_retry_delay), if backlog_retry_enabled => {
                 retry_only = true;
                 0usize
             },
-            _ = cancel.cancelled() => return Ok(()),
         };
         if retry_only {
             let route_wait_ms = reader_route_data_wait_ms.load(Ordering::Relaxed);
