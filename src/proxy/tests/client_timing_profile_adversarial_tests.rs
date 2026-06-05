@@ -75,12 +75,17 @@ async fn run_generic_once(class: ProbeClass) -> u128 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let backend_addr = listener.local_addr().unwrap();
     let backend_reply = REPLY_404.to_vec();
+    let probe = match class {
+        ProbeClass::MalformedTlsTruncation => malformed_tls_probe(),
+        ProbeClass::PlainWebBaseline => plain_web_probe(),
+    };
 
     let accept_task = tokio::spawn({
         let backend_reply = backend_reply.clone();
+        let expected_probe_len = probe.len();
         async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 5];
+            let mut buf = vec![0u8; expected_probe_len];
             stream.read_exact(&mut buf).await.unwrap();
             stream.write_all(&backend_reply).await.unwrap();
         }
@@ -94,6 +99,7 @@ async fn run_generic_once(class: ProbeClass) -> u128 {
     cfg.censorship.mask_host = Some("127.0.0.1".to_string());
     cfg.censorship.mask_port = backend_addr.port();
     cfg.censorship.mask_proxy_protocol = 0;
+    cfg.censorship.mask_shape_hardening = false;
 
     if matches!(class, ProbeClass::PlainWebBaseline) {
         cfg.general.modes.classic = false;
@@ -130,11 +136,6 @@ async fn run_generic_once(class: ProbeClass) -> u128 {
         false,
     ));
 
-    let probe = match class {
-        ProbeClass::MalformedTlsTruncation => malformed_tls_probe(),
-        ProbeClass::PlainWebBaseline => plain_web_probe(),
-    };
-
     let started = Instant::now();
     client_side.write_all(&probe).await.unwrap();
     client_side.shutdown().await.unwrap();
@@ -170,11 +171,16 @@ async fn run_client_handler_once(class: ProbeClass) -> u128 {
     let front_addr = front_listener.local_addr().unwrap();
 
     let backend_reply = REPLY_404.to_vec();
+    let probe = match class {
+        ProbeClass::MalformedTlsTruncation => malformed_tls_probe(),
+        ProbeClass::PlainWebBaseline => plain_web_probe(),
+    };
     let mask_accept_task = tokio::spawn({
         let backend_reply = backend_reply.clone();
+        let expected_probe_len = probe.len();
         async move {
             let (mut stream, _) = mask_listener.accept().await.unwrap();
-            let mut buf = [0u8; 5];
+            let mut buf = vec![0u8; expected_probe_len];
             stream.read_exact(&mut buf).await.unwrap();
             stream.write_all(&backend_reply).await.unwrap();
         }
@@ -188,6 +194,7 @@ async fn run_client_handler_once(class: ProbeClass) -> u128 {
     cfg.censorship.mask_host = Some("127.0.0.1".to_string());
     cfg.censorship.mask_port = backend_addr.port();
     cfg.censorship.mask_proxy_protocol = 0;
+    cfg.censorship.mask_shape_hardening = false;
 
     if matches!(class, ProbeClass::PlainWebBaseline) {
         cfg.general.modes.classic = false;
@@ -238,11 +245,6 @@ async fn run_client_handler_once(class: ProbeClass) -> u128 {
             .run()
             .await
         })
-    };
-
-    let probe = match class {
-        ProbeClass::MalformedTlsTruncation => malformed_tls_probe(),
-        ProbeClass::PlainWebBaseline => plain_web_probe(),
     };
 
     let mut client = TcpStream::connect(front_addr).await.unwrap();
