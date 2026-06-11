@@ -10,11 +10,14 @@ use std::time::{Duration, Instant};
 use tokio::sync::Barrier;
 
 fn make_valid_tls_handshake(secret: &[u8], timestamp: u32) -> Vec<u8> {
+    make_valid_tls_handshake_with_fill(secret, timestamp, 0x42)
+}
+
+fn make_valid_tls_handshake_with_fill(secret: &[u8], timestamp: u32, fill: u8) -> Vec<u8> {
     const TLS_AES_128_GCM_SHA256: [u8; 2] = [0x13, 0x01];
     const TLS_EXTENSION_KEY_SHARE: u16 = 0x0033;
     const X25519_KEY_SHARE_LEN: usize = 32;
     let session_id_len: usize = 32;
-    let fill = 0x42u8;
 
     let mut extensions = Vec::new();
     let mut key_share = Vec::new();
@@ -650,12 +653,17 @@ async fn adversarial_tls_replay_churn_allows_only_unique_digests() {
         }));
     }
 
-    // 128 unique timestamps: all should pass because HMAC digest differs.
+    // 128 unique ClientHello bodies: all should pass because replay tracks the
+    // first digest half, while timestamp skew is encoded in the last bytes.
     for i in 0..128u16 {
         let config = Arc::clone(&config);
         let replay_checker = Arc::clone(&replay_checker);
         let rng = Arc::clone(&rng);
-        let handshake = make_valid_tls_handshake(&secret, 10_000 + i as u32);
+        let handshake = make_valid_tls_handshake_with_fill(
+            &secret,
+            10_000 + i as u32,
+            (i as u8).wrapping_add(0x80),
+        );
         tasks.push(tokio::spawn(async move {
             let peer = SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::new(198, 18, 0, ((i % 250) + 1) as u8)),
