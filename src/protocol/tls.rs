@@ -63,6 +63,7 @@
 
 use super::constants::*;
 use crate::crypto::{SecureRandom, sha256_hmac};
+use ml_kem::{B32, EncapsulationKey as MlKemEncapsulationKey, Key as MlKemKey, MlKem768};
 #[cfg(test)]
 use crate::error::ProxyError;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -123,6 +124,7 @@ pub(crate) const TLS_NAMED_GROUP_X25519MLKEM768: u16 = named_curve::X25519MLKEM7
 const X25519_KEY_SHARE_LEN: usize = 32;
 const X25519MLKEM768_CLIENT_KEY_SHARE_LEN: usize = 1216;
 const X25519MLKEM768_SERVER_KEY_SHARE_LEN: usize = 1120;
+const MLKEM768_CLIENT_ENCAPSULATION_KEY_LEN: usize = 1184;
 const MLKEM768_SERVER_CIPHERTEXT_LEN: usize = 1088;
 
 // ============= TLS Validation Result =============
@@ -521,9 +523,15 @@ fn validate_tls_handshake_at_time_with_boot_cap(
 /// Uses RFC 7748 X25519 scalar multiplication over the canonical basepoint,
 /// yielding distribution-consistent public keys for anti-fingerprinting.
 pub fn gen_fake_x25519_key(rng: &SecureRandom) -> [u8; 32] {
+    let (_scalar, public_key) = gen_x25519_key_pair(rng);
+    public_key
+}
+
+fn gen_x25519_key_pair(rng: &SecureRandom) -> ([u8; 32], [u8; 32]) {
     let mut scalar = [0u8; X25519_KEY_SHARE_LEN];
-    scalar.copy_from_slice(&rng.bytes(X25519_KEY_SHARE_LEN));
-    x25519(scalar, X25519_BASEPOINT_BYTES)
+    rng.fill(&mut scalar);
+    let public_key = x25519(scalar, X25519_BASEPOINT_BYTES);
+    (scalar, public_key)
 }
 
 /// Generate a fake X25519MLKEM768 ServerHello key_share payload.
@@ -535,6 +543,49 @@ pub(crate) fn gen_fake_x25519mlkem768_server_key_share(rng: &SecureRandom) -> Ve
     let x25519_key = gen_fake_x25519_key(rng);
     key_share[MLKEM768_SERVER_CIPHERTEXT_LEN..].copy_from_slice(&x25519_key);
     key_share
+}
+
+fn mlkem768_encapsulate_to_client(client_key: &[u8], rng: &SecureRandom) -> Option<Vec<u8>> {
+    let key_bytes = MlKemKey::<MlKemEncapsulationKey<MlKem768>>::try_from(client_key).ok()?;
+    let encapsulation_key = MlKemEncapsulationKey::<MlKem768>::new(&key_bytes).ok()?;
+    let mut randomness = [0u8; 32];
+    rng.fill(&mut randomness);
+    let randomness = B32::try_from(randomness.as_slice()).ok()?;
+    let (ciphertext, _shared_key) = encapsulation_key.encapsulate_deterministic(&randomness);
+    let ciphertext = ciphertext.as_slice().to_vec();
+    if ciphertext.len() == MLKEM768_SERVER_CIPHERTEXT_LEN {
+        Some(ciphertext)
+    } else {
+        None
+    }
+}
+
+/// Build a valid X25519MLKEM768 ServerHello key_share for the authenticated ClientHello.
+pub(crate) fn build_x25519mlkem768_server_key_share(
+    handshake: &[u8],
+    rng: &SecureRandom,
+) -> Option<Vec<u8>> {
+    let client_key_exchange = client_hello_key_share_group_entry(
+        handshake,
+        TLS_NAMED_GROUP_X25519MLKEM768,
+        X25519MLKEM768_CLIENT_KEY_SHARE_LEN,
+    )?;
+    let client_mlkem_key = client_key_exchange.get(..MLKEM768_CLIENT_ENCAPSULATION_KEY_LEN)?;
+    let client_x25519_key = client_key_exchange.get(MLKEM768_CLIENT_ENCAPSULATION_KEY_LEN..)?;
+    let mlkem_ciphertext = mlkem768_encapsulate_to_client(client_mlkem_key, rng)?;
+
+    let mut client_x25519 = [0u8; X25519_KEY_SHARE_LEN];
+    client_x25519.copy_from_slice(client_x25519_key);
+    let (server_x25519_scalar, server_x25519_key) = gen_x25519_key_pair(rng);
+    let x25519_shared = x25519(server_x25519_scalar, client_x25519);
+    if bool::from(x25519_shared.ct_eq(&[0u8; X25519_KEY_SHARE_LEN])) {
+        return None;
+    }
+
+    let mut key_share = Vec::with_capacity(X25519MLKEM768_SERVER_KEY_SHARE_LEN);
+    key_share.extend_from_slice(&mlkem_ciphertext);
+    key_share.extend_from_slice(&server_x25519_key);
+    Some(key_share)
 }
 
 /// Build TLS ServerHello response
@@ -561,6 +612,7 @@ pub fn build_server_hello(
         fake_cert_len,
         rng,
         cipher_suite::TLS_AES_128_GCM_SHA256,
+        &gen_fake_x25519mlkem768_server_key_share(rng),
         alpn,
         new_session_tickets,
     )
@@ -578,6 +630,7 @@ pub(crate) fn build_server_hello_with_cipher(
     fake_cert_len: usize,
     rng: &SecureRandom,
     selected_cipher_suite: [u8; 2],
+    server_key_share: &[u8],
     alpn: Option<Vec<u8>>,
     new_session_tickets: u8,
 ) -> Vec<u8> {
@@ -586,10 +639,9 @@ pub(crate) fn build_server_hello_with_cipher(
     let fake_cert_len = fake_cert_len.clamp(MIN_APP_DATA, MAX_APP_DATA);
 
     // Build ServerHello
-    let key_share = gen_fake_x25519mlkem768_server_key_share(rng);
     let server_hello = ServerHelloBuilder::new(session_id.to_vec())
         .with_cipher_suite(selected_cipher_suite)
-        .with_key_share(TLS_NAMED_GROUP_X25519MLKEM768, &key_share)
+        .with_key_share(TLS_NAMED_GROUP_X25519MLKEM768, server_key_share)
         .with_tls13_version()
         .build_record();
 
@@ -1096,49 +1148,56 @@ fn client_hello_extensions_range(handshake: &[u8]) -> Option<(usize, usize)> {
     Some((pos, extensions_end))
 }
 
-fn key_share_extension_has_group(
-    data: &[u8],
+fn key_share_extension_group_entry<'a>(
+    data: &'a [u8],
     group: u16,
     expected_key_exchange_len: usize,
-) -> bool {
+) -> Option<&'a [u8]> {
     if data.len() < 2 {
-        return false;
+        return None;
     }
 
     let shares_len = u16::from_be_bytes([data[0], data[1]]) as usize;
     if shares_len != data.len().saturating_sub(2) {
-        return false;
+        return None;
     }
 
     let mut pos = 2usize;
     let shares_end = 2 + shares_len;
-    let mut found_group = false;
+    let mut found_group = None;
     while pos + 4 <= shares_end {
         let entry_group = u16::from_be_bytes([data[pos], data[pos + 1]]);
         let key_exchange_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
         pos += 4;
         let Some(key_exchange_end) = pos.checked_add(key_exchange_len) else {
-            return false;
+            return None;
         };
         if key_exchange_end > shares_end {
-            return false;
+            return None;
         }
-        if entry_group == group && key_exchange_len == expected_key_exchange_len {
-            found_group = true;
+        if entry_group == group {
+            if key_exchange_len != expected_key_exchange_len || found_group.is_some() {
+                return None;
+            }
+            found_group = Some(&data[pos..key_exchange_end]);
         }
         pos = key_exchange_end;
     }
 
-    found_group && pos == shares_end
+    if pos == shares_end {
+        found_group
+    } else {
+        None
+    }
 }
 
-fn client_hello_offers_key_share_group(
-    handshake: &[u8],
+fn client_hello_key_share_group_entry<'a>(
+    handshake: &'a [u8],
     group: u16,
     expected_key_exchange_len: usize,
-) -> bool {
+) -> Option<&'a [u8]> {
     let Some((mut pos, extensions_end)) = client_hello_extensions_range(handshake) else {
-        return false;
+        return None;
     };
 
     while pos + 4 <= extensions_end {
@@ -1146,14 +1205,14 @@ fn client_hello_offers_key_share_group(
         let ext_len = u16::from_be_bytes([handshake[pos + 2], handshake[pos + 3]]) as usize;
         pos += 4;
         let Some(ext_end) = pos.checked_add(ext_len) else {
-            return false;
+            return None;
         };
         if ext_end > extensions_end {
-            return false;
+            return None;
         }
 
         if ext_type == extension_type::KEY_SHARE {
-            return key_share_extension_has_group(
+            return key_share_extension_group_entry(
                 &handshake[pos..ext_end],
                 group,
                 expected_key_exchange_len,
@@ -1163,7 +1222,7 @@ fn client_hello_offers_key_share_group(
         pos = ext_end;
     }
 
-    false
+    None
 }
 
 fn client_hello_offers_cipher_suite(
@@ -1227,11 +1286,13 @@ pub(crate) fn select_server_hello_cipher_suite(
 /// Malformed or non-hybrid key_share structures fail closed so authenticated
 /// but DPI-inconsistent ClientHellos take the ordinary masking fallback path.
 pub(crate) fn select_server_hello_key_share_group(handshake: &[u8]) -> Option<u16> {
-    if client_hello_offers_key_share_group(
+    if client_hello_key_share_group_entry(
         handshake,
         TLS_NAMED_GROUP_X25519MLKEM768,
         X25519MLKEM768_CLIENT_KEY_SHARE_LEN,
-    ) {
+    )
+    .is_some()
+    {
         Some(TLS_NAMED_GROUP_X25519MLKEM768)
     } else {
         None

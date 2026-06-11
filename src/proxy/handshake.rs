@@ -1473,15 +1473,15 @@ where
         return HandshakeResult::BadClient { reader, writer };
     }
 
-    if tls::select_server_hello_key_share_group(handshake).is_none() {
+    let Some(server_key_share) = tls::build_x25519mlkem768_server_key_share(handshake, rng) else {
         auth_probe_record_failure_in(shared, peer.ip(), Instant::now());
         maybe_apply_server_hello_delay(config).await;
         debug!(
             peer = %peer,
-            "TLS handshake rejected: ClientHello did not offer a valid X25519MLKEM768 key_share"
+            "TLS handshake rejected: ClientHello did not offer a usable X25519MLKEM768 key_share"
         );
         return HandshakeResult::BadClient { reader, writer };
-    }
+    };
 
     let cached_entry = if config.censorship.tls_emulation {
         if let Some(cache) = tls_cache.as_ref() {
@@ -1553,6 +1553,7 @@ where
             config.censorship.serverhello_compact,
             client_tls_version,
             selected_cipher_suite,
+            &server_key_share,
             rng,
             selected_alpn.clone(),
             config.censorship.tls_new_session_tickets,
@@ -1565,6 +1566,7 @@ where
             config.censorship.fake_cert_len,
             rng,
             selected_cipher_suite,
+            &server_key_share,
             selected_alpn.clone(),
             config.censorship.tls_new_session_tickets,
         )

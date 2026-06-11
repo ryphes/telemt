@@ -7,7 +7,6 @@ use crate::protocol::constants::{
 };
 use crate::protocol::tls::{
     ClientHelloTlsVersion, TLS_DIGEST_LEN, TLS_DIGEST_POS, TLS_NAMED_GROUP_X25519MLKEM768,
-    gen_fake_x25519mlkem768_server_key_share,
 };
 use crate::tls_front::types::{
     CachedTlsData, ParsedCertificateInfo, TlsExtension, TlsProfileSource,
@@ -209,15 +208,18 @@ fn push_key_share_entry(extensions: &mut Vec<u8>, group: u16, key_exchange: &[u8
     extensions.extend_from_slice(key_exchange);
 }
 
-fn push_key_share_extension(extensions: &mut Vec<u8>, rng: &SecureRandom) {
-    let key = gen_fake_x25519mlkem768_server_key_share(rng);
-    push_key_share_entry(extensions, TLS_NAMED_GROUP_X25519MLKEM768, &key);
+fn push_key_share_extension(extensions: &mut Vec<u8>, server_key_share: &[u8]) {
+    push_key_share_entry(
+        extensions,
+        TLS_NAMED_GROUP_X25519MLKEM768,
+        server_key_share,
+    );
 }
 
 fn replay_profiled_server_hello_extension(
     ext: &TlsExtension,
     extensions: &mut Vec<u8>,
-    rng: &SecureRandom,
+    server_key_share: &[u8],
     saw_supported_versions: &mut bool,
     saw_key_share: &mut bool,
 ) {
@@ -227,7 +229,7 @@ fn replay_profiled_server_hello_extension(
             *saw_supported_versions = true;
         }
         EXT_KEY_SHARE if !*saw_key_share => {
-            push_key_share_extension(extensions, rng);
+            push_key_share_extension(extensions, server_key_share);
             *saw_key_share = true;
         }
         EXT_ALPN => {}
@@ -235,7 +237,10 @@ fn replay_profiled_server_hello_extension(
     }
 }
 
-fn build_profiled_server_hello_extensions(cached: &CachedTlsData, rng: &SecureRandom) -> Vec<u8> {
+fn build_profiled_server_hello_extensions(
+    cached: &CachedTlsData,
+    server_key_share: &[u8],
+) -> Vec<u8> {
     let capacity = cached
         .server_hello_template
         .extensions
@@ -251,14 +256,14 @@ fn build_profiled_server_hello_extensions(cached: &CachedTlsData, rng: &SecureRa
         replay_profiled_server_hello_extension(
             ext,
             &mut extensions,
-            rng,
+            server_key_share,
             &mut saw_supported_versions,
             &mut saw_key_share,
         );
     }
 
     if !saw_key_share {
-        push_key_share_extension(&mut extensions, rng);
+        push_key_share_extension(&mut extensions, server_key_share);
     }
     if !saw_supported_versions {
         push_supported_versions_extension(&mut extensions);
@@ -277,12 +282,13 @@ pub fn build_emulated_server_hello(
     serverhello_compact: bool,
     client_tls_version: ClientHelloTlsVersion,
     selected_cipher_suite: [u8; 2],
+    server_key_share: &[u8],
     rng: &SecureRandom,
     alpn: Option<Vec<u8>>,
     new_session_tickets: u8,
 ) -> Vec<u8> {
     // --- ServerHello ---
-    let extensions = build_profiled_server_hello_extensions(cached, rng);
+    let extensions = build_profiled_server_hello_extensions(cached, server_key_share);
     let extensions_len = extensions.len() as u16;
 
     let body_len = 2 + 32 + 1 + session_id.len() + 2 + 1 + 2 + extensions.len();
@@ -534,6 +540,10 @@ mod tests {
         }
     }
 
+    fn test_server_key_share() -> Vec<u8> {
+        vec![0x42; 1120]
+    }
+
     #[test]
     fn test_build_emulated_server_hello_uses_cached_cert_payload() {
         let cert_msg = vec![0x0b, 0x00, 0x00, 0x05, 0x00, 0xaa, 0xbb, 0xcc, 0xdd];
@@ -551,6 +561,7 @@ mod tests {
             true,
             ClientHelloTlsVersion::Tls12,
             [0x13, 0x01],
+            &test_server_key_share(),
             &rng,
             None,
             0,
@@ -580,6 +591,7 @@ mod tests {
             true,
             ClientHelloTlsVersion::Tls13,
             [0x13, 0x03],
+            &test_server_key_share(),
             &rng,
             None,
             0,
@@ -615,6 +627,7 @@ mod tests {
             true,
             ClientHelloTlsVersion::Tls13,
             [0x13, 0x01],
+            &test_server_key_share(),
             &rng,
             Some(b"h2".to_vec()),
             0,
@@ -639,6 +652,7 @@ mod tests {
             true,
             ClientHelloTlsVersion::Tls12,
             [0x13, 0x01],
+            &test_server_key_share(),
             &rng,
             None,
             0,
@@ -674,6 +688,7 @@ mod tests {
             true,
             ClientHelloTlsVersion::Tls12,
             [0x13, 0x01],
+            &test_server_key_share(),
             &rng,
             None,
             0,
@@ -715,6 +730,7 @@ mod tests {
             true,
             ClientHelloTlsVersion::Tls13,
             [0x13, 0x01],
+            &test_server_key_share(),
             &rng,
             None,
             0,
@@ -748,6 +764,7 @@ mod tests {
             false,
             ClientHelloTlsVersion::Tls12,
             [0x13, 0x01],
+            &test_server_key_share(),
             &rng,
             Some(b"h2".to_vec()),
             0,
@@ -780,6 +797,7 @@ mod tests {
             true,
             ClientHelloTlsVersion::Tls13,
             [0x13, 0x01],
+            &test_server_key_share(),
             &rng,
             None,
             0,

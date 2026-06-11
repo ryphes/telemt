@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
+use ml_kem::{
+    DecapsulationKey as MlKemDecapsulationKey, KeyExport, MlKem768, Seed as MlKemSeed,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 #[cfg(unix)]
@@ -33,12 +36,17 @@ use crate::network::dns_overrides::resolve_socket_addr;
 use crate::protocol::constants::{
     TLS_RECORD_APPLICATION, TLS_RECORD_CHANGE_CIPHER, TLS_RECORD_HANDSHAKE,
 };
+use crate::protocol::tls::{TLS_NAMED_GROUP_X25519, TLS_NAMED_GROUP_X25519MLKEM768};
 use crate::tls_front::types::{
     ParsedCertificateInfo, ParsedServerHello, TlsBehaviorProfile, TlsCertPayload, TlsExtension,
     TlsFetchResult, TlsProfileSource,
 };
 use crate::transport::UpstreamStream;
 use crate::transport::proxy_protocol::{ProxyProtocolV1Builder, ProxyProtocolV2Builder};
+
+#[cfg(test)]
+const X25519_KEY_SHARE_LEN: usize = 32;
+const MLKEM768_CLIENT_ENCAPSULATION_KEY_LEN: usize = 1184;
 
 /// No-op verifier: accept any certificate (we only need lengths and metadata).
 #[derive(Debug)]
@@ -393,8 +401,13 @@ fn profile_cipher_suites(profile: TlsFetchProfile) -> &'static [u16] {
 }
 
 fn profile_groups(profile: TlsFetchProfile) -> &'static [u16] {
-    const MODERN: &[u16] = &[0x001d, 0x0017, 0x0018]; // x25519, secp256r1, secp384r1
-    const COMPAT: &[u16] = &[0x001d, 0x0017];
+    const MODERN: &[u16] = &[
+        TLS_NAMED_GROUP_X25519MLKEM768,
+        TLS_NAMED_GROUP_X25519,
+        0x0017,
+        0x0018,
+    ];
+    const COMPAT: &[u16] = &[TLS_NAMED_GROUP_X25519, 0x0017];
     const LEGACY: &[u16] = &[0x0017];
 
     match profile {
@@ -473,6 +486,50 @@ fn grease_value(rng: &SecureRandom, deterministic: bool, seed: &str) -> u16 {
         let idx = (rng.bytes(1)[0] as usize) % GREASE_VALUES.len();
         GREASE_VALUES[idx]
     }
+}
+
+fn gen_mlkem768_client_encapsulation_key(
+    rng: &SecureRandom,
+    deterministic: bool,
+    seed: &str,
+) -> Option<Vec<u8>> {
+    let seed_bytes = if deterministic {
+        deterministic_bytes(seed, 64)
+    } else {
+        rng.bytes(64)
+    };
+    let seed = MlKemSeed::try_from(seed_bytes.as_slice()).ok()?;
+    let decapsulation_key = MlKemDecapsulationKey::<MlKem768>::from_seed(seed);
+    let encapsulation_key = decapsulation_key.encapsulation_key().to_bytes();
+    let bytes = encapsulation_key.as_slice();
+    if bytes.len() == MLKEM768_CLIENT_ENCAPSULATION_KEY_LEN {
+        Some(bytes.to_vec())
+    } else {
+        None
+    }
+}
+
+fn gen_x25519mlkem768_client_key_share(
+    rng: &SecureRandom,
+    deterministic: bool,
+    seed: &str,
+) -> Option<Vec<u8>> {
+    let mlkem_key = gen_mlkem768_client_encapsulation_key(
+        rng,
+        deterministic,
+        &format!("{seed}:mlkem768"),
+    )?;
+    let x25519_key = gen_key_share(rng, deterministic, &format!("{seed}:x25519"));
+    let mut key_share = Vec::with_capacity(MLKEM768_CLIENT_ENCAPSULATION_KEY_LEN + x25519_key.len());
+    key_share.extend_from_slice(&mlkem_key);
+    key_share.extend_from_slice(&x25519_key);
+    Some(key_share)
+}
+
+fn push_client_key_share_entry(keyshare: &mut Vec<u8>, group: u16, key: &[u8]) {
+    keyshare.extend_from_slice(&group.to_be_bytes());
+    keyshare.extend_from_slice(&(key.len() as u16).to_be_bytes());
+    keyshare.extend_from_slice(key);
 }
 
 fn build_client_hello(
@@ -597,16 +654,21 @@ fn build_client_hello(
         push_extension(0x002d, &[0x01, 0x01]);
     }
 
-    // key_share (x25519)
-    let key = gen_key_share(
-        rng,
-        deterministic,
-        &format!("tls-fetch-keyshare:{sni}:{}", profile.as_str()),
-    );
-    let mut keyshare = Vec::with_capacity(4 + key.len());
-    keyshare.extend_from_slice(&0x001du16.to_be_bytes());
-    keyshare.extend_from_slice(&(key.len() as u16).to_be_bytes());
-    keyshare.extend_from_slice(&key);
+    // key_share
+    let key_share_seed = format!("tls-fetch-keyshare:{sni}:{}", profile.as_str());
+    let mut keyshare = Vec::new();
+    if matches!(
+        profile,
+        TlsFetchProfile::ModernChromeLike | TlsFetchProfile::ModernFirefoxLike
+    ) {
+        if let Some(key) =
+            gen_x25519mlkem768_client_key_share(rng, deterministic, &key_share_seed)
+        {
+            push_client_key_share_entry(&mut keyshare, TLS_NAMED_GROUP_X25519MLKEM768, &key);
+        }
+    }
+    let key = gen_key_share(rng, deterministic, &key_share_seed);
+    push_client_key_share_entry(&mut keyshare, TLS_NAMED_GROUP_X25519, &key);
     let mut keyshare_ext = Vec::with_capacity(2 + keyshare.len());
     keyshare_ext.extend_from_slice(&(keyshare.len() as u16).to_be_bytes());
     keyshare_ext.extend_from_slice(&keyshare);
@@ -1788,11 +1850,34 @@ mod tests {
             key_share_data.len() - 2,
             "key_share list length mismatch"
         );
-        let group = u16::from_be_bytes([key_share_data[2], key_share_data[3]]);
-        let key_len = u16::from_be_bytes([key_share_data[4], key_share_data[5]]) as usize;
-        let key = &key_share_data[6..6 + key_len];
-        assert_eq!(group, 0x001d, "key_share group must be x25519");
-        assert_eq!(key_len, 32, "x25519 key length must be 32");
+        let mut pos = 2usize;
+        let hybrid_group = u16::from_be_bytes([key_share_data[pos], key_share_data[pos + 1]]);
+        let hybrid_len =
+            u16::from_be_bytes([key_share_data[pos + 2], key_share_data[pos + 3]]) as usize;
+        pos += 4;
+        let hybrid_key = &key_share_data[pos..pos + hybrid_len];
+        pos += hybrid_len;
+        assert_eq!(
+            hybrid_group, TLS_NAMED_GROUP_X25519MLKEM768,
+            "first key_share group must be X25519MLKEM768"
+        );
+        assert_eq!(
+            hybrid_len,
+            MLKEM768_CLIENT_ENCAPSULATION_KEY_LEN + X25519_KEY_SHARE_LEN,
+            "hybrid key length must match X25519MLKEM768"
+        );
+        assert!(
+            hybrid_key.iter().any(|b| *b != 0),
+            "hybrid key must not be all zero"
+        );
+
+        let group = u16::from_be_bytes([key_share_data[pos], key_share_data[pos + 1]]);
+        let key_len =
+            u16::from_be_bytes([key_share_data[pos + 2], key_share_data[pos + 3]]) as usize;
+        pos += 4;
+        let key = &key_share_data[pos..pos + key_len];
+        assert_eq!(group, TLS_NAMED_GROUP_X25519, "second key_share group must be x25519");
+        assert_eq!(key_len, X25519_KEY_SHARE_LEN, "x25519 key length must be 32");
         assert!(
             key.iter().any(|b| *b != 0),
             "x25519 key must not be all zero"

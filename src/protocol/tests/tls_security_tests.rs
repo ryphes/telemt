@@ -1457,6 +1457,7 @@ fn emulated_server_hello_never_places_alpn_in_server_hello_extensions() {
         true,
         ClientHelloTlsVersion::Tls13,
         [0x13, 0x01],
+        &vec![0x42; X25519MLKEM768_SERVER_KEY_SHARE_LEN],
         &rng,
         Some(b"h2".to_vec()),
         0,
@@ -1545,6 +1546,7 @@ fn test_build_server_hello_with_cipher_always_uses_hybrid_key_share() {
     let secret = b"test secret";
     let client_digest = [0x42u8; 32];
     let session_id = vec![0xAA; 32];
+    let key_share = vec![0x55u8; X25519MLKEM768_SERVER_KEY_SHARE_LEN];
 
     let rng = crate::crypto::SecureRandom::new();
     let response = build_server_hello_with_cipher(
@@ -1554,6 +1556,7 @@ fn test_build_server_hello_with_cipher_always_uses_hybrid_key_share() {
         2048,
         &rng,
         [0x13, 0x01],
+        &key_share,
         None,
         0,
     );
@@ -1634,6 +1637,22 @@ fn client_key_share_extension(entries: &[(u16, usize)]) -> Vec<u8> {
         shares.extend_from_slice(&(*key_exchange_len as u16).to_be_bytes());
         let start = shares.len();
         shares.resize(start + *key_exchange_len, 0x42);
+    }
+
+    assert!(shares.len() <= u16::MAX as usize);
+    let mut extension = Vec::new();
+    extension.extend_from_slice(&(shares.len() as u16).to_be_bytes());
+    extension.extend_from_slice(&shares);
+    extension
+}
+
+fn client_key_share_extension_with_payloads(entries: &[(u16, &[u8])]) -> Vec<u8> {
+    let mut shares = Vec::new();
+    for (group, key_exchange) in entries {
+        assert!(key_exchange.len() <= u16::MAX as usize);
+        shares.extend_from_slice(&group.to_be_bytes());
+        shares.extend_from_slice(&(key_exchange.len() as u16).to_be_bytes());
+        shares.extend_from_slice(key_exchange);
     }
 
     assert!(shares.len() <= u16::MAX as usize);
@@ -1866,6 +1885,64 @@ fn select_server_hello_key_share_group_prefers_hybrid_when_valid_share_is_offere
         select_server_hello_key_share_group(&ch),
         Some(TLS_NAMED_GROUP_X25519MLKEM768)
     );
+}
+
+#[test]
+fn build_x25519mlkem768_server_key_share_accepts_tdesktop_canonical_share() {
+    let key_share = client_key_share_extension(&[
+        (
+            TLS_NAMED_GROUP_X25519MLKEM768,
+            X25519MLKEM768_CLIENT_KEY_SHARE_LEN,
+        ),
+        (TLS_NAMED_GROUP_X25519, X25519_KEY_SHARE_LEN),
+    ]);
+    let ch = build_client_hello_with_exts(vec![(0x0033, key_share)], "example.com");
+    let rng = crate::crypto::SecureRandom::new();
+
+    let server_key_share = build_x25519mlkem768_server_key_share(&ch, &rng)
+        .expect("tdesktop-like canonical share must build a ServerHello share");
+
+    assert_eq!(server_key_share.len(), X25519MLKEM768_SERVER_KEY_SHARE_LEN);
+    assert!(
+        server_key_share[..MLKEM768_SERVER_CIPHERTEXT_LEN]
+            .iter()
+            .any(|byte| *byte != 0),
+        "ML-KEM ciphertext must not be all zero"
+    );
+    assert!(
+        server_key_share[MLKEM768_SERVER_CIPHERTEXT_LEN..]
+            .iter()
+            .any(|byte| *byte != 0),
+        "X25519 server share must not be all zero"
+    );
+}
+
+#[test]
+fn build_x25519mlkem768_server_key_share_rejects_noncanonical_mlkem_key() {
+    let mut key_exchange = vec![0x42; X25519MLKEM768_CLIENT_KEY_SHARE_LEN];
+    key_exchange[..3].copy_from_slice(&[0xff, 0xff, 0xff]);
+    let key_share = client_key_share_extension_with_payloads(&[(
+        TLS_NAMED_GROUP_X25519MLKEM768,
+        &key_exchange,
+    )]);
+    let ch = build_client_hello_with_exts(vec![(0x0033, key_share)], "example.com");
+    let rng = crate::crypto::SecureRandom::new();
+
+    assert!(build_x25519mlkem768_server_key_share(&ch, &rng).is_none());
+}
+
+#[test]
+fn build_x25519mlkem768_server_key_share_rejects_all_zero_x25519_share() {
+    let mut key_exchange = vec![0x42; X25519MLKEM768_CLIENT_KEY_SHARE_LEN];
+    key_exchange[MLKEM768_CLIENT_ENCAPSULATION_KEY_LEN..].fill(0);
+    let key_share = client_key_share_extension_with_payloads(&[(
+        TLS_NAMED_GROUP_X25519MLKEM768,
+        &key_exchange,
+    )]);
+    let ch = build_client_hello_with_exts(vec![(0x0033, key_share)], "example.com");
+    let rng = crate::crypto::SecureRandom::new();
+
+    assert!(build_x25519mlkem768_server_key_share(&ch, &rng).is_none());
 }
 
 #[test]

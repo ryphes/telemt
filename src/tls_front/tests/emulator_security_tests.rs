@@ -44,6 +44,10 @@ fn first_app_data_payload(response: &[u8]) -> &[u8] {
     &response[app_start + 5..app_start + 5 + app_len]
 }
 
+fn test_server_key_share() -> Vec<u8> {
+    vec![0x42; 1120]
+}
+
 #[test]
 fn emulated_server_hello_ignores_oversized_alpn_when_marker_would_not_fit() {
     let cached = make_cached(None);
@@ -59,6 +63,7 @@ fn emulated_server_hello_ignores_oversized_alpn_when_marker_would_not_fit() {
         true,
         ClientHelloTlsVersion::Tls13,
         [0x13, 0x01],
+        &test_server_key_share(),
         &rng,
         Some(oversized_alpn),
         0,
@@ -98,6 +103,7 @@ fn emulated_server_hello_keeps_alpn_marker_out_of_appdata() {
         true,
         ClientHelloTlsVersion::Tls13,
         [0x13, 0x01],
+        &test_server_key_share(),
         &rng,
         Some(b"h2".to_vec()),
         0,
@@ -129,6 +135,7 @@ fn emulated_server_hello_prefers_cert_payload_over_alpn_marker() {
         true,
         ClientHelloTlsVersion::Tls12,
         [0x13, 0x01],
+        &test_server_key_share(),
         &rng,
         Some(b"h2".to_vec()),
         0,

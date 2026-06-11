@@ -52,6 +52,10 @@ fn record_lengths_by_type(response: &[u8], wanted_type: u8) -> Vec<usize> {
     out
 }
 
+fn test_server_key_share() -> Vec<u8> {
+    vec![0x42; 1120]
+}
+
 #[test]
 fn emulated_server_hello_keeps_single_change_cipher_spec_for_client_compatibility() {
     let cached = make_cached();
@@ -66,6 +70,7 @@ fn emulated_server_hello_keeps_single_change_cipher_spec_for_client_compatibilit
         true,
         ClientHelloTlsVersion::Tls13,
         [0x13, 0x01],
+        &test_server_key_share(),
         &rng,
         None,
         0,
@@ -91,6 +96,7 @@ fn emulated_server_hello_does_not_emit_profile_ticket_tail_when_disabled() {
         true,
         ClientHelloTlsVersion::Tls13,
         [0x13, 0x01],
+        &test_server_key_share(),
         &rng,
         None,
         0,
@@ -114,6 +120,7 @@ fn emulated_server_hello_uses_profile_ticket_lengths_when_enabled() {
         true,
         ClientHelloTlsVersion::Tls13,
         [0x13, 0x01],
+        &test_server_key_share(),
         &rng,
         None,
         2,
