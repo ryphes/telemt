@@ -561,7 +561,6 @@ pub fn build_server_hello(
         fake_cert_len,
         rng,
         cipher_suite::TLS_AES_128_GCM_SHA256,
-        TLS_NAMED_GROUP_X25519MLKEM768,
         alpn,
         new_session_tickets,
     )
@@ -579,7 +578,6 @@ pub(crate) fn build_server_hello_with_cipher(
     fake_cert_len: usize,
     rng: &SecureRandom,
     selected_cipher_suite: [u8; 2],
-    selected_key_share_group: u16,
     alpn: Option<Vec<u8>>,
     new_session_tickets: u8,
 ) -> Vec<u8> {
@@ -588,21 +586,12 @@ pub(crate) fn build_server_hello_with_cipher(
     let fake_cert_len = fake_cert_len.clamp(MIN_APP_DATA, MAX_APP_DATA);
 
     // Build ServerHello
-    let server_hello = if selected_key_share_group == TLS_NAMED_GROUP_X25519MLKEM768 {
-        let key_share = gen_fake_x25519mlkem768_server_key_share(rng);
-        ServerHelloBuilder::new(session_id.to_vec())
-            .with_cipher_suite(selected_cipher_suite)
-            .with_key_share(TLS_NAMED_GROUP_X25519MLKEM768, &key_share)
-            .with_tls13_version()
-            .build_record()
-    } else {
-        let key_share = gen_fake_x25519_key(rng);
-        ServerHelloBuilder::new(session_id.to_vec())
-            .with_cipher_suite(selected_cipher_suite)
-            .with_key_share(TLS_NAMED_GROUP_X25519, &key_share)
-            .with_tls13_version()
-            .build_record()
-    };
+    let key_share = gen_fake_x25519mlkem768_server_key_share(rng);
+    let server_hello = ServerHelloBuilder::new(session_id.to_vec())
+        .with_cipher_suite(selected_cipher_suite)
+        .with_key_share(TLS_NAMED_GROUP_X25519MLKEM768, &key_share)
+        .with_tls13_version()
+        .build_record();
 
     // Build Change Cipher Spec record
     let change_cipher_spec = [
@@ -1201,20 +1190,23 @@ fn is_tls13_cipher_suite(suite: [u8; 2]) -> bool {
 /// Select the ServerHello cipher suite from the already-received ClientHello.
 ///
 /// This is intentionally a borrowed, zero-allocation scan. It runs only for an
-/// authenticated success response and keeps malformed or unexpected ClientHello
-/// shapes on the previous fallback behavior.
-pub(crate) fn select_server_hello_cipher_suite(handshake: &[u8], preferred: [u8; 2]) -> [u8; 2] {
+/// authenticated success response and fails closed for malformed or unsupported
+/// ClientHello shapes that cannot produce a DPI-consistent ServerHello.
+pub(crate) fn select_server_hello_cipher_suite(
+    handshake: &[u8],
+    preferred: [u8; 2],
+) -> Option<[u8; 2]> {
     let preferred = if is_tls13_cipher_suite(preferred) {
         preferred
     } else {
         cipher_suite::TLS_AES_128_GCM_SHA256
     };
     let Some(range) = client_hello_cipher_suites_range(handshake) else {
-        return preferred;
+        return None;
     };
 
     if client_hello_offers_cipher_suite(handshake, range, preferred) {
-        return preferred;
+        return Some(preferred);
     }
 
     for fallback in [
@@ -1223,26 +1215,26 @@ pub(crate) fn select_server_hello_cipher_suite(handshake: &[u8], preferred: [u8;
         cipher_suite::TLS_AES_256_GCM_SHA384,
     ] {
         if client_hello_offers_cipher_suite(handshake, range, fallback) {
-            return fallback;
+            return Some(fallback);
         }
     }
 
-    preferred
+    None
 }
 
-/// Select the ServerHello key_share named group from the authenticated ClientHello.
+/// Select the hybrid ServerHello key_share named group from the authenticated ClientHello.
 ///
-/// Malformed key_share structures intentionally keep the legacy X25519 response
-/// to avoid breaking older clients that do not advertise the hybrid group.
-pub(crate) fn select_server_hello_key_share_group(handshake: &[u8]) -> u16 {
+/// Malformed or non-hybrid key_share structures fail closed so authenticated
+/// but DPI-inconsistent ClientHellos take the ordinary masking fallback path.
+pub(crate) fn select_server_hello_key_share_group(handshake: &[u8]) -> Option<u16> {
     if client_hello_offers_key_share_group(
         handshake,
         TLS_NAMED_GROUP_X25519MLKEM768,
         X25519MLKEM768_CLIENT_KEY_SHARE_LEN,
     ) {
-        TLS_NAMED_GROUP_X25519MLKEM768
+        Some(TLS_NAMED_GROUP_X25519MLKEM768)
     } else {
-        TLS_NAMED_GROUP_X25519
+        None
     }
 }
 
