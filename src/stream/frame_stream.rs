@@ -559,6 +559,16 @@ mod tests {
     use std::sync::Arc;
     use tokio::io::duplex;
 
+    fn assert_secure_decoded_payload(decoded: &[u8], original: &[u8]) {
+        assert!(decoded.starts_with(original));
+        assert!(
+            (original.len()..=original.len() + 12).contains(&decoded.len()),
+            "Secure decoded payload may retain up to 12 bytes of full-word padding, got {}",
+            decoded.len()
+        );
+        assert_eq!(decoded.len() % 4, 0);
+    }
+
     #[tokio::test]
     async fn test_abridged_roundtrip() {
         let (client, server) = duplex(1024);
@@ -625,7 +635,7 @@ mod tests {
         writer.flush().await.unwrap();
 
         let (received, _meta) = reader.read_frame().await.unwrap();
-        assert_eq!(received.len(), data.len());
+        assert_secure_decoded_payload(&received, &data);
     }
 
     #[tokio::test]

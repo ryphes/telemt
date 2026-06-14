@@ -523,6 +523,16 @@ mod tests {
     use tokio::io::duplex;
     use tokio_util::codec::{FramedRead, FramedWrite};
 
+    fn assert_secure_decoded_payload(decoded: &[u8], original: &[u8]) {
+        assert!(decoded.starts_with(original));
+        assert!(
+            (original.len()..=original.len() + 12).contains(&decoded.len()),
+            "Secure decoded payload may retain up to 12 bytes of full-word padding, got {}",
+            decoded.len()
+        );
+        assert_eq!(decoded.len() % 4, 0);
+    }
+
     #[tokio::test]
     async fn test_framed_abridged() {
         let (client, server) = duplex(4096);
@@ -565,7 +575,7 @@ mod tests {
         writer.send(frame).await.unwrap();
 
         let received = reader.next().await.unwrap().unwrap();
-        assert_eq!(&received.data[..], &original[..]);
+        assert_secure_decoded_payload(&received.data, &original);
     }
 
     #[tokio::test]
@@ -588,7 +598,11 @@ mod tests {
             writer.send(frame).await.unwrap();
 
             let received = reader.next().await.unwrap().unwrap();
-            assert_eq!(received.data.len(), 8);
+            if proto_tag == ProtoTag::Secure {
+                assert_secure_decoded_payload(&received.data, &original);
+            } else {
+                assert_eq!(received.data.len(), original.len());
+            }
         }
     }
 

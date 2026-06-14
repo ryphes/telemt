@@ -331,7 +331,8 @@ where
         )
         .await?;
 
-        // Secure Intermediate: strip validated trailing padding bytes.
+        // Secure Intermediate strips only non-aligned tail padding; full-word
+        // padding is indistinguishable from payload in VersionD framing.
         if proto_tag == ProtoTag::Secure {
             payload.truncate(secure_payload_len);
         }
