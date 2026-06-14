@@ -409,7 +409,10 @@ mod tests {
         response[28..32].copy_from_slice(&[203, 0, 113, 9]);
 
         let reflected = parse_reflected_addr(&response, &txid).unwrap();
-        assert_eq!(reflected, SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 443));
+        assert_eq!(
+            reflected,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 443)
+        );
     }
 
     #[test]
@@ -436,6 +439,9 @@ mod tests {
         response[28..32].copy_from_slice(&xip);
 
         let reflected = parse_reflected_addr(&response, &txid).unwrap();
-        assert_eq!(reflected, SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 443));
+        assert_eq!(
+            reflected,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 443)
+        );
     }
 }

@@ -37,9 +37,7 @@ pub async fn stun_probe(stun_addr: Option<String>) -> Result<crate::network::stu
 #[allow(dead_code)]
 pub async fn detect_public_ip() -> Option<IpAddr> {
     let urls = crate::config::defaults::default_http_ip_detect_urls();
-    detect_public_ipv4_http(&urls)
-        .await
-        .map(IpAddr::V4)
+    detect_public_ipv4_http(&urls).await.map(IpAddr::V4)
 }
 
 impl MePool {
