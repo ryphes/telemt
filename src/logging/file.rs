@@ -240,7 +240,10 @@ fn open_append_file(path: &Path) -> io::Result<(File, u64)> {
     let file = match options.open(path) {
         Ok(file) => file,
         Err(error) => {
-            let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+            let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            else {
                 return Err(error);
             };
             fs::create_dir_all(parent)?;
@@ -259,13 +262,9 @@ fn active_path_for(
 ) -> PathBuf {
     match rotation {
         LogRotation::Never => dir.join(base_name),
-        LogRotation::Minutely
-        | LogRotation::Hourly
-        | LogRotation::Daily
-        | LogRotation::Weekly => dir.join(format!(
-            "{base_name}.{}",
-            period_suffix_for(rotation, now)
-        )),
+        LogRotation::Minutely | LogRotation::Hourly | LogRotation::Daily | LogRotation::Weekly => {
+            dir.join(format!("{base_name}.{}", period_suffix_for(rotation, now)))
+        }
     }
 }
 

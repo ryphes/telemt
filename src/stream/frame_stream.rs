@@ -371,9 +371,10 @@ impl<W: AsyncWrite + Unpin> SecureIntermediateFrameWriter<W> {
         let padding_len = secure_padding_len(data.len(), &self.rng);
         let padding = self.rng.bytes(padding_len);
 
-        let total_len = data.len().checked_add(padding_len).ok_or_else(|| {
-            Error::new(ErrorKind::InvalidInput, "secure frame length overflow")
-        })?;
+        let total_len = data
+            .len()
+            .checked_add(padding_len)
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "secure frame length overflow"))?;
         let len = encode_intermediate_header(total_len, meta.quickack).ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidInput,
@@ -564,11 +565,7 @@ impl<R: AsyncRead + Unpin> FrameReaderKind<R> {
         Self::with_max_frame_size(upstream, proto_tag, DEFAULT_MAX_FRAME_SIZE)
     }
 
-    fn with_max_frame_size(
-        upstream: R,
-        proto_tag: ProtoTag,
-        max_frame_size: usize,
-    ) -> Self {
+    fn with_max_frame_size(upstream: R, proto_tag: ProtoTag, max_frame_size: usize) -> Self {
         match proto_tag {
             ProtoTag::Abridged => FrameReaderKind::Abridged(
                 AbridgedFrameReader::with_max_frame_size(upstream, max_frame_size),

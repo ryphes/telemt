@@ -237,11 +237,7 @@ where
                     Err(e) => return Err(e),
                 }
                 let header = crate::protocol::framing::parse_intermediate_header(len_buf);
-                (
-                    header.wire_len,
-                    header.quickack,
-                    Some(len_buf),
-                )
+                (header.wire_len, header.quickack, Some(len_buf))
             }
         };
 

@@ -20,9 +20,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant as StdInstant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpStream, lookup_host};
 #[cfg(unix)]
 use tokio::net::UnixStream;
+use tokio::net::{TcpStream, lookup_host};
 #[cfg(unix)]
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Instant, timeout};

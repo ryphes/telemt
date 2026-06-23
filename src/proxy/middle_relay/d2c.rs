@@ -307,14 +307,10 @@ pub(in crate::proxy::middle_relay) fn compute_intermediate_secure_wire_len(
     let wire_len = data_len
         .checked_add(padding_len)
         .ok_or_else(|| ProxyError::Proxy("Frame length overflow".into()))?;
-    let len_val =
-        crate::protocol::framing::encode_intermediate_header(wire_len, quickack).ok_or_else(
-            || {
-                ProxyError::Proxy(format!(
-                    "Intermediate/Secure frame too large: {wire_len}"
-                ))
-            },
-        )?;
+    let len_val = crate::protocol::framing::encode_intermediate_header(wire_len, quickack)
+        .ok_or_else(|| {
+            ProxyError::Proxy(format!("Intermediate/Secure frame too large: {wire_len}"))
+        })?;
     let total = 4usize
         .checked_add(wire_len)
         .ok_or_else(|| ProxyError::Proxy("Frame buffer size overflow".into()))?;
